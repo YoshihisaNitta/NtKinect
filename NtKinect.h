@@ -4,7 +4,7 @@
  * http://opensource.org/licenses/mit-license.php
  */
 
-/* version 1.1: 2016/07/18 */
+/* version 1.2: 2016/07/21 */
 
 #pragma once
 
@@ -528,7 +528,7 @@ class NtKinect {
     ERROR_CHECK(bodyIndexFrameSource->get_FrameDescription(&bodyIndexFrameDescription));
     bodyIndexFrameDescription->get_Width(&bodyIndexWidth);
     bodyIndexFrameDescription->get_Height(&bodyIndexHeight);
-    bodyIndexBuffer.resize(depthWidth * depthHeight);
+    bodyIndexBuffer.resize(bodyIndexWidth * bodyIndexHeight);
 
     colors[0] = cv::Vec3b(0, 0, 0);
     colors[1] = cv::Vec3b(255, 0, 0);
@@ -551,15 +551,24 @@ class NtKinect {
   }
  public:
   cv::Mat bodyIndexImage;
-  void setBodyIndex() { setBodyIndex(bodyIndexImage); }
-  void setBodyIndex(cv::Mat& bodyIndexImage) {
+  void setBodyIndex(bool raw = true) { setBodyIndex(bodyIndexImage, raw); }
+  void setBodyIndex(cv::Mat& bodyIndexImage, bool raw = true) {
     updateBodyIndexFrame();
-    bodyIndexImage = cv::Mat(bodyIndexHeight, bodyIndexWidth, CV_8UC3);
-    for (int i = 0; i < bodyIndexHeight*bodyIndexWidth; i++) {
-      int y = i / bodyIndexWidth;
-      int x = i % bodyIndexWidth;
-      int c = (bodyIndexBuffer[i] != 255) ? bodyIndexBuffer[i] + 1 : 0;
-      bodyIndexImage.at<cv::Vec3b>(y, x) = colors[c];
+    if (raw) {
+      bodyIndexImage = cv::Mat(bodyIndexHeight, bodyIndexWidth, CV_8UC1);
+      for (int i = 0; i < bodyIndexHeight*bodyIndexWidth; i++) {
+        int y = i / bodyIndexWidth;
+        int x = i % bodyIndexWidth;
+        bodyIndexImage.at<uchar>(y, x) = bodyIndexBuffer[i];
+      }
+    } else {
+      bodyIndexImage = cv::Mat(bodyIndexHeight, bodyIndexWidth, CV_8UC3);
+      for (int i = 0; i < bodyIndexHeight*bodyIndexWidth; i++) {
+        int y = i / bodyIndexWidth;
+        int x = i % bodyIndexWidth;
+        int c = (bodyIndexBuffer[i] != 255) ? bodyIndexBuffer[i] + 1 : 0;
+        bodyIndexImage.at<cv::Vec3b>(y, x) = colors[c];
+      }
     }
   }
 
