@@ -4,7 +4,7 @@
  * http://opensource.org/licenses/mit-license.php
  */
 
-/* version 1.2: 2016/07/21 */
+/* version 1.3: 2016/08/10 */
 
 #pragma once
 
@@ -180,13 +180,12 @@ class NtKinect {
   void initializeSpeech() {
     if (speech_initialized) return;
     speech_initialized = true;
-    if (CLSID_ExpectedRecognizer != CLSID_SpInprocRecognizer)
-      {
-        stringstream ss;
-        ss << "This sample was compiled against an incompatible version of sapi.h.\n"
-           << "Please ensure that Microsoft Speech SDK and other sample requirements are installed and then rebuild application.";
-        throw runtime_error(ss.str());
-      }
+    if (CLSID_ExpectedRecognizer != CLSID_SpInprocRecognizer) {
+      stringstream ss;
+      ss << "This sample was compiled against an incompatible version of sapi.h.\n"
+         << "Please ensure that Microsoft Speech SDK and other sample requirements are installed and then rebuild application.";
+      throw runtime_error(ss.str());
+    }
     CComPtr<IAudioSource> audioSource;
     ERROR_CHECK(kinect->get_AudioSource(&audioSource));
 
@@ -667,12 +666,13 @@ class NtKinect {
 #ifdef USE_FACE
   // ******** face ********
  private:
-  array<CComPtr<IFaceFrameReader>, BODY_COUNT> faceFrameReader;
+  array<CComPtr<IFaceFrameReader>, BODY_COUNT> faceFrameReader; // color
   BOOLEAN face_initialized = false;
+  array<CComPtr<IFaceFrameReader>, BODY_COUNT> faceFrameReader2; // infrared
+  BOOLEAN face_initialized2 = false;
   //array<cv::Scalar, BODY_COUNT> colors;
   //array<string, FaceProperty::FaceProperty_Count> labels;
-  void initializeFace()
-  {
+  void initializeFace() {
     if (!body_initialized) throw runtime_error("You must call setSkeleton() before calling setFace().");
     DWORD features =
       FaceFrameFeatures::FaceFrameFeatures_BoundingBoxInColorSpace
@@ -694,8 +694,29 @@ class NtKinect {
     }
     face_initialized = true;
   }
-  inline void quaternion2degree(const Vector4* quaternion, float* pitch, float* yaw, float* roll)
-  {
+  void initializeFace2() {
+    if (!body_initialized) throw runtime_error("You must call setSkeleton() before calling setFace().");
+    DWORD features =
+      FaceFrameFeatures::FaceFrameFeatures_BoundingBoxInInfraredSpace
+      | FaceFrameFeatures::FaceFrameFeatures_PointsInInfraredSpace
+      | FaceFrameFeatures::FaceFrameFeatures_RotationOrientation
+      | FaceFrameFeatures::FaceFrameFeatures_Happy
+      | FaceFrameFeatures::FaceFrameFeatures_RightEyeClosed
+      | FaceFrameFeatures::FaceFrameFeatures_LeftEyeClosed
+      | FaceFrameFeatures::FaceFrameFeatures_MouthOpen
+      | FaceFrameFeatures::FaceFrameFeatures_MouthMoved
+      | FaceFrameFeatures::FaceFrameFeatures_LookingAway
+      | FaceFrameFeatures::FaceFrameFeatures_Glasses
+      | FaceFrameFeatures::FaceFrameFeatures_FaceEngagement;
+
+    for (int count = 0; count < BODY_COUNT; count++) {
+      CComPtr<IFaceFrameSource> faceFrameSource;
+      ERROR_CHECK(CreateFaceFrameSource(kinect, 0, features, &faceFrameSource));
+      ERROR_CHECK(faceFrameSource->OpenReader(&faceFrameReader2[count]));
+    }
+    face_initialized2 = true;
+  }
+  inline void quaternion2degree(const Vector4* quaternion, float* pitch, float* yaw, float* roll) {
     double x = quaternion->x;
     double y = quaternion->y;
     double z = quaternion->z;
@@ -710,9 +731,9 @@ class NtKinect {
   vector<cv::Rect> faceRect;
   vector<cv::Vec3f> faceDirection;
   vector<vector<DetectionResult>> faceProperty;
-  void setFace()
-  {
-    if (!face_initialized) initializeFace();
+  void setFace(bool isColorSpace=true) {
+    if (isColorSpace && !face_initialized) initializeFace();
+    else if (!isColorSpace && !face_initialized2) initializeFace2();
     facePoint.clear();
     faceRect.clear();
     faceDirection.clear();
@@ -721,27 +742,44 @@ class NtKinect {
       int bid = skeletonId[i];
       UINT64 trackingId = skeletonTrackingId[i];
       CComPtr<IFaceFrameSource> faceFrameSource;
-      ERROR_CHECK(faceFrameReader[bid]->get_FaceFrameSource(&faceFrameSource));
+      if (isColorSpace) {
+        ERROR_CHECK(faceFrameReader[bid]->get_FaceFrameSource(&faceFrameSource));
+      } else {
+        ERROR_CHECK(faceFrameReader2[bid]->get_FaceFrameSource(&faceFrameSource));
+      }
       ERROR_CHECK(faceFrameSource->put_TrackingId(trackingId));
       CComPtr<IFaceFrame> faceFrame;
-      HRESULT ret = faceFrameReader[bid]->AcquireLatestFrame(&faceFrame);
-      if (FAILED(ret)) continue;
+      if (isColorSpace) {
+        HRESULT ret = faceFrameReader[bid]->AcquireLatestFrame(&faceFrame);
+        if (FAILED(ret)) continue;
+      } else {
+        HRESULT ret = faceFrameReader2[bid]->AcquireLatestFrame(&faceFrame);
+        if (FAILED(ret)) continue;
+      }
       BOOLEAN tracked;
       ERROR_CHECK(faceFrame->get_IsTrackingIdValid(&tracked));
       if (!tracked) continue;
       CComPtr<IFaceFrameResult> faceResult;
       ERROR_CHECK(faceFrame->get_FaceFrameResult(&faceResult));
-      if (faceResult != nullptr) doFaceResult(faceResult, bid);
+      if (faceResult != nullptr) doFaceResult(faceResult, bid, isColorSpace);
     }
   }
-  void doFaceResult(const CComPtr<IFaceFrameResult>& result, const int bid) {
+  void doFaceResult(const CComPtr<IFaceFrameResult>& result, const int bid, const bool isColorSpace=true) {
     vector<PointF> points;
     points.resize(FacePointType::FacePointType_Count);
-    ERROR_CHECK(result->GetFacePointsInColorSpace(FacePointType::FacePointType_Count, &points[0]));
+    if (isColorSpace) {
+      ERROR_CHECK(result->GetFacePointsInColorSpace(FacePointType::FacePointType_Count, &points[0]));
+    } else {
+      ERROR_CHECK(result->GetFacePointsInInfraredSpace(FacePointType::FacePointType_Count, &points[0]));
+    }
     facePoint.push_back(points);
 
     RectI box;
-    ERROR_CHECK(result->get_FaceBoundingBoxInColorSpace(&box));
+    if (isColorSpace) {
+      ERROR_CHECK(result->get_FaceBoundingBoxInColorSpace(&box));
+    } else {
+      ERROR_CHECK(result->get_FaceBoundingBoxInInfraredSpace(&box));
+    }
     cv::Rect rect((int)box.Left, (int)box.Top, (int)(box.Bottom - box.Top), (int)(box.Right - box.Left));
     faceRect.push_back(rect);
 
