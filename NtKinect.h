@@ -4,7 +4,7 @@
  * http://opensource.org/licenses/mit-license.php
  */
 
-/* version 1.3: 2016/08/10 */
+/* version 1.4: 2016/08/14 */
 
 #pragma once
 
@@ -19,11 +19,11 @@
 // and specify "Configuration Property" -> "Build Event" -> "Post Build Event" -> "Command Line" --> 
 //     xcopy "$(KINECTSDK20_DIR)\Redist\Face\x64" "$(OutDir)" /e /y /i /r
 
-#ifdef USE_FACE
+#if defined(USE_FACE)
 #include <array>
 #define _USE_MATH_DEFINES
 #include <cmath>
-#endif /* USE_FACE */
+#endif /* defined(USE_FACE) */
 
 #include <iostream>
 #include <sstream>
@@ -34,9 +34,10 @@
 
 #include <Kinect.h>
 
-#ifdef USE_FACE
+#if defined(USE_FACE)
 #include <Kinect.Face.h>
-#endif /* USE_FACE */
+#endif /* defined(USE_FACE) */
+
 
 #ifdef USE_SPEECH
 // Quote from Kinect for Windows SDK v2.0 - Sample/Native/SpeechBasics-D2D
@@ -731,6 +732,7 @@ class NtKinect {
   vector<cv::Rect> faceRect;
   vector<cv::Vec3f> faceDirection;
   vector<vector<DetectionResult>> faceProperty;
+  vector<UINT64> faceTrackingId;
   void setFace(bool isColorSpace=true) {
     if (isColorSpace && !face_initialized) initializeFace();
     else if (!isColorSpace && !face_initialized2) initializeFace2();
@@ -738,6 +740,7 @@ class NtKinect {
     faceRect.clear();
     faceDirection.clear();
     faceProperty.clear();
+    faceTrackingId.clear();
     for (int i = 0; i < skeleton.size(); i++) {
       int bid = skeletonId[i];
       UINT64 trackingId = skeletonTrackingId[i];
@@ -761,10 +764,10 @@ class NtKinect {
       if (!tracked) continue;
       CComPtr<IFaceFrameResult> faceResult;
       ERROR_CHECK(faceFrame->get_FaceFrameResult(&faceResult));
-      if (faceResult != nullptr) doFaceResult(faceResult, bid, isColorSpace);
+      if (faceResult != nullptr) doFaceResult(faceResult, bid, trackingId, isColorSpace);
     }
   }
-  void doFaceResult(const CComPtr<IFaceFrameResult>& result, const int bid, const bool isColorSpace=true) {
+  void doFaceResult(const CComPtr<IFaceFrameResult>& result, const int bid, const UINT64 trackingId, const bool isColorSpace=true) {
     vector<PointF> points;
     points.resize(FacePointType::FacePointType_Count);
     if (isColorSpace) {
@@ -782,6 +785,7 @@ class NtKinect {
     }
     cv::Rect rect((int)box.Left, (int)box.Top, (int)(box.Bottom - box.Top), (int)(box.Right - box.Left));
     faceRect.push_back(rect);
+    faceTrackingId.push_back(trackingId);
 
     Vector4 quaternion;
     float pitch, yaw, roll;
@@ -797,9 +801,158 @@ class NtKinect {
   }
 #endif /* USE_FACE */
 
+#if defined(USE_FACE)
+  // ******** hdface ********
+ private:
+  array<CComPtr<IHighDefinitionFaceFrameReader>,BODY_MAX> hdfaceFrameReader;
+  BOOLEAN hdface_initialized = false;
+  array<CComPtr<IFaceModel>,BODY_MAX>  faceModel;
+  array<bool,BODY_MAX> hdfaceModelValid;
+  array<CComPtr<IFaceAlignment>,BODY_MAX> faceAlignment;
+  array<CComPtr<IFaceModelBuilder>,BODY_MAX> faceModelBuilder;
+  array<UINT32,BODY_MAX> hdfaceVertexCount;
+  array<UINT64,BODY_MAX> _hdfaceTrackingId;
+  void initializeHDFace() {
+    if (!body_initialized) throw runtime_error("You must call setSkeleton() before calling setHDFace().");
+    for (int count = 0; count < BODY_COUNT; count++) {
+      CComPtr<IHighDefinitionFaceFrameSource> hdfaceFrameSource;
+      ERROR_CHECK(CreateHighDefinitionFaceFrameSource(kinect,&hdfaceFrameSource));
+      ERROR_CHECK(hdfaceFrameSource->OpenReader(&hdfaceFrameReader[count]));
+      ERROR_CHECK(CreateFaceAlignment(&faceAlignment[count]));
+      ERROR_CHECK(CreateFaceModel(1.0f, FaceShapeDeformations::FaceShapeDeformations_Count,&shapeUnits[count],&faceModel[count]));
+      ERROR_CHECK(GetFaceModelVertexCount(&hdfaceVertexCount[count]));
+      FaceModelBuilderAttributes attributes = FaceModelBuilderAttributes::FaceModelBuilderAttributes_None;
+      ERROR_CHECK(hdfaceFrameSource->OpenModelBuilder(attributes,&faceModelBuilder[count]));
+      ERROR_CHECK(faceModelBuilder[count]->BeginFaceDataCollection());
+      _hdfaceTrackingId[count] = -1;
+      hdfaceModelValid[count] = false;
+    }
+    hdface_initialized = true;
+  }
+  void updateHDFaceFrame(int idx) {
+    CComPtr<IHighDefinitionFaceFrame> hdfaceFrame;
+    HRESULT ret = hdfaceFrameReader[idx]->AcquireLatestFrame(&hdfaceFrame);
+    if (FAILED(ret)) return;
+    BOOLEAN tracked = false;
+    ERROR_CHECK(hdfaceFrame->get_IsFaceTracked(&tracked));
+    if (!tracked) return;
+    ERROR_CHECK(hdfaceFrame->GetAndRefreshFaceAlignmentResult(faceAlignment[idx]));
+    if (faceAlignment[idx] == nullptr) return;
+    buildFaceModel(idx);
+    vector<CameraSpacePoint> vertices;
+    vertices.resize(hdfaceVertexCount[idx]);
+    ERROR_CHECK(faceModel[idx]->CalculateVerticesForAlignment(faceAlignment[idx],hdfaceVertexCount[idx],&vertices[0]));
+    hdfaceVertices.push_back(vertices);
+    hdfaceTrackingId.push_back(_hdfaceTrackingId[idx]);
+    hdfaceStatus.push_back(hdfaceGetStatus(idx));
+  }
+  void buildFaceModel(int idx) {
+    if (hdfaceModelValid[idx]) return;
+    if (hdfaceCollectionStatus(idx)) return;
+    CComPtr<IFaceModelData> faceModelData = nullptr;
+    ERROR_CHECK(faceModelBuilder[idx]->GetFaceData(&faceModelData));
+    if (faceModelData != nullptr) {
+#if 0
+      ERROR_CHECK(faceModelData->ProduceFaceModel(&faceModel[idx]));  // ??? not needed for Kinect SDK v2.0_1409
+#endif
+      hdfaceModelValid[idx] = true;
+    }
+  }
+ public:
+  array<float,FaceShapeDeformations::FaceShapeDeformations_Count> shapeUnits;
+  vector<vector<CameraSpacePoint>> hdfaceVertices;
+  vector<UINT64> hdfaceTrackingId;
+  vector<pair<int,int>> hdfaceStatus;
+  void setHDFace() {
+    if (!hdface_initialized) initializeHDFace();
+    hdfaceVertices.clear();
+    hdfaceTrackingId.clear();
+    hdfaceStatus.clear();
+    for (int i = 0; i < skeleton.size(); i++) {
+      int bid = skeletonId[i];
+      UINT64 trackingId = skeletonTrackingId[i];
+      if (trackingId != _hdfaceTrackingId[bid]) {
+        CComPtr<IHighDefinitionFaceFrameSource> hdfaceFrameSource;
+        ERROR_CHECK(hdfaceFrameReader[bid]->get_HighDefinitionFaceFrameSource(&hdfaceFrameSource));
+        ERROR_CHECK(hdfaceFrameSource->put_TrackingId(trackingId));
+        _hdfaceTrackingId[bid] = trackingId;
+        hdfaceModelValid[bid] = false;
+      }
+      updateHDFaceFrame(bid);
+    }
+  }
+  int hdfaceCollectionStatus(int idx) {
+    FaceModelBuilderCollectionStatus collection;
+    ERROR_CHECK(faceModelBuilder[idx]->get_CollectionStatus(&collection));
+    return collection;
+  }
+  int hdfaceCaptureStatus(int idx) {
+    FaceModelBuilderCaptureStatus capture;
+    ERROR_CHECK(faceModelBuilder[idx]->get_CaptureStatus(&capture));
+    return capture;
+  }
+  pair<int,int> hdfaceGetStatus(int idx) {
+    return pair<int,int>(hdfaceCollectionStatus(idx),hdfaceCaptureStatus(idx));
+  }
+  string hdfaceCollectionStatusToString(int st) {
+    string s = "";
+    if (st & FaceModelBuilderCollectionStatus::FaceModelBuilderCollectionStatus_MoreFramesNeeded) {
+      s += "MoreFrameNeeded,";
+    }
+    if (st & FaceModelBuilderCollectionStatus::FaceModelBuilderCollectionStatus_FrontViewFramesNeeded) {
+      s += "FrontViewFramesNeeded,";
+    }
+    if (st & FaceModelBuilderCollectionStatus::FaceModelBuilderCollectionStatus_LeftViewsNeeded) {
+      s += "LeftViewsNeeded,";
+    }
+    if (st & FaceModelBuilderCollectionStatus::FaceModelBuilderCollectionStatus_RightViewsNeeded) {
+      s += "RightViewsNeeded,";
+    }
+    if (st & FaceModelBuilderCollectionStatus::FaceModelBuilderCollectionStatus_TiltedUpViewsNeeded) {
+      s += "TiltedUpViewsNeeded,";
+    }
+    return s;
+  }
+  string hdfaceCaptureStatusToString(int st) {
+    string s = "";
+    if (st == FaceModelBuilderCaptureStatus::FaceModelBuilderCaptureStatus_GoodFrameCapture) {
+      s = "GoodFrameCapture";
+    } else if (st == FaceModelBuilderCaptureStatus::FaceModelBuilderCaptureStatus_OtherViewsNeeded) {
+      s = "OtherViewsNeeded";
+    } else if (st == FaceModelBuilderCaptureStatus::FaceModelBuilderCaptureStatus_LostFaceTrack) {
+      s = "LostFaceTrack";
+    } else if (st == FaceModelBuilderCaptureStatus::FaceModelBuilderCaptureStatus_FaceTooFar) {
+      s = "FaceTooFar";
+    } else if (st == FaceModelBuilderCaptureStatus::FaceModelBuilderCaptureStatus_FaceTooNear) {
+      s = "FaceTooNear";
+    } else if (st == FaceModelBuilderCaptureStatus::FaceModelBuilderCaptureStatus_MovingTooFast) {
+      s = "MovingTooFast";
+    } else if (st == FaceModelBuilderCaptureStatus::FaceModelBuilderCaptureStatus_SystemError) {
+      s = "SystemError";
+    }
+    return s;
+  };
+  pair<string,string> hdfaceStatusToString(pair<int,int> status) {
+    return pair<string,string>(hdfaceCollectionStatusToString(status.first),hdfaceCaptureStatusToString(status.second));
+  }
+#endif /* defined(USE_FACE) */
+
  public:
   NtKinect() { initialize();  }
   ~NtKinect() {
     if (kinect != nullptr) kinect->Close();
+  }
+  cv::Rect boundingBoxInColorSpace(vector<CameraSpacePoint>& v) {
+    int minX = INT_MAX, maxX = INT_MIN, minY = INT_MAX, maxY = INT_MIN;
+    for (CameraSpacePoint sp: v) {
+      ColorSpacePoint cp;
+      coordinateMapper->MapCameraPointToColorSpace(sp,&cp);
+      if (minX > (int)cp.X) minX = (int)cp.X;
+      if (maxX < (int)cp.X) maxX = (int)cp.X;
+      if (minY > (int)cp.Y) minY = (int)cp.Y;
+      if (maxY < (int)cp.Y) maxY = (int)cp.Y;
+    }
+    if (maxX<=minX || maxY<=minY) return cv::Rect(0,0,0,0);
+    return cv::Rect(minX,minY,maxX-minX,maxY-minY);
   }
 };
