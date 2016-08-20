@@ -4,7 +4,7 @@
  * http://opensource.org/licenses/mit-license.php
  */
 
-/* version 1.4: 2016/08/14 */
+/* version 1.5: 2016/08/20 */
 
 #pragma once
 
@@ -19,11 +19,15 @@
 // and specify "Configuration Property" -> "Build Event" -> "Post Build Event" -> "Command Line" --> 
 //     xcopy "$(KINECTSDK20_DIR)\Redist\Face\x64" "$(OutDir)" /e /y /i /r
 
-#if defined(USE_FACE)
+#if defined(USE_GESTURE)
+#include <Kinect.VisualGestureBuilder.h>
+#endif
+
+#if defined(USE_FACE) || defined(USE_GESTURE)
 #include <array>
 #define _USE_MATH_DEFINES
 #include <cmath>
-#endif /* defined(USE_FACE) */
+#endif /* defined(USE_FACE) || defined(USE_GESTURE) */
 
 #include <iostream>
 #include <sstream>
@@ -416,8 +420,7 @@ class NtKinect {
     colorBuffer.resize(colorWidth * colorHeight * colorBytesPerPixel);
     color_initialized = true;
   }
-  void updateColorFrame()
-  {
+  void updateColorFrame() {
     if (!color_initialized) initializeColorFrame();
     CComPtr<IColorFrame> colorFrame;
     auto ret = colorFrameReader->AcquireLatestFrame(&colorFrame);
@@ -442,8 +445,7 @@ class NtKinect {
   int depthHeight;
   UINT16 maxDepth;
   UINT16 minDepth;
-  void initializeDepthFrame()
-  {
+  void initializeDepthFrame() {
     CComPtr<IDepthFrameSource> depthFrameSource;
     ERROR_CHECK(kinect->get_DepthFrameSource(&depthFrameSource));
     ERROR_CHECK(depthFrameSource->OpenReader(&depthFrameReader));
@@ -457,8 +459,7 @@ class NtKinect {
     depthBuffer.resize(depthWidth * depthHeight);
     depth_initialized = true;
   }
-  void updateDepthFrame()
-  {
+  void updateDepthFrame() {
     if (!depth_initialized) initializeDepthFrame();
     CComPtr<IDepthFrame> depthFrame;
     auto ret = depthFrameReader->AcquireLatestFrame(&depthFrame);
@@ -519,8 +520,7 @@ class NtKinect {
   int bodyIndexWidth;
   int bodyIndexHeight;
   cv::Vec3b   colors[8];
-  void initializeBodyIndexFrame()
-  {
+  void initializeBodyIndexFrame() {
     CComPtr<IBodyIndexFrameSource> bodyIndexFrameSource;
     ERROR_CHECK(kinect->get_BodyIndexFrameSource(&bodyIndexFrameSource));
     ERROR_CHECK(bodyIndexFrameSource->OpenReader(&bodyIndexFrameReader));
@@ -541,8 +541,7 @@ class NtKinect {
 
     bodyIndex_initialized = true;
   }
-  void updateBodyIndexFrame()
-  {
+  void updateBodyIndexFrame() {
     if (!bodyIndex_initialized) initializeBodyIndexFrame();
     CComPtr<IBodyIndexFrame> bodyIndexFrame;
     auto ret = bodyIndexFrameReader->AcquireLatestFrame(&bodyIndexFrame);
@@ -936,6 +935,112 @@ class NtKinect {
     return pair<string,string>(hdfaceCollectionStatusToString(status.first),hdfaceCaptureStatusToString(status.second));
   }
 #endif /* defined(USE_FACE) */
+
+#if defined(USE_GESTURE)
+  // ******** gesture ********
+ private:
+  std::array<CComPtr<IVisualGestureBuilderFrameReader>, BODY_MAX> gestureFrameReader;
+  BOOLEAN gesture_initialized = false;
+  std::vector<CComPtr<IGesture>> gestures;
+  wstring gestureFile =  L"SampleDatabase.gbd";
+  void initializeGesture() {
+    if (!body_initialized) throw runtime_error("You must call setSkeleton() before calling setGesture().");
+    for (int count = 0; count < BODY_MAX; count++) {
+      CComPtr<IVisualGestureBuilderFrameSource> gestureFrameSource;
+      ERROR_CHECK(CreateVisualGestureBuilderFrameSource(kinect, 0, &gestureFrameSource));
+      ERROR_CHECK(gestureFrameSource->OpenReader(&gestureFrameReader[count]));
+    }
+    CComPtr<IVisualGestureBuilderDatabase> gestureDatabase;
+    ERROR_CHECK(CreateVisualGestureBuilderDatabaseInstanceFromFile(gestureFile.c_str(), &gestureDatabase))
+    UINT gestureCount;
+    ERROR_CHECK(gestureDatabase->get_AvailableGesturesCount(&gestureCount));
+    gestures.resize(gestureCount);
+    ERROR_CHECK(gestureDatabase->get_AvailableGestures(gestureCount, &gestures[0]));
+    for( int count = 0; count < BODY_MAX; count++ ){
+      CComPtr<IVisualGestureBuilderFrameSource> gestureFrameSource;
+      ERROR_CHECK(gestureFrameReader[count]->get_VisualGestureBuilderFrameSource(&gestureFrameSource));
+      ERROR_CHECK(gestureFrameSource->AddGestures(gestureCount, &gestures[0].p));
+      for (const CComPtr<IGesture> g : gestures){
+        ERROR_CHECK(gestureFrameSource->SetIsEnabled(g, TRUE));
+      }
+    }
+    gesture_initialized = true;
+  }
+  void gestureResult(const CComPtr<IVisualGestureBuilderFrame>& gestureFrame, const CComPtr<IGesture>& gesture, const UINT64 trackingId) {
+    GestureType gestureType;
+    ERROR_CHECK( gesture->get_GestureType( &gestureType ) );
+    switch( gestureType ) {
+    case GestureType::GestureType_Discrete: {
+      CComPtr<IDiscreteGestureResult> gestureResult;
+      ERROR_CHECK( gestureFrame->get_DiscreteGestureResult( gesture, &gestureResult ) );
+      BOOLEAN detected;
+      ERROR_CHECK( gestureResult->get_Detected( &detected ) );
+      if(!detected) break;
+      float confidence;
+      ERROR_CHECK( gestureResult->get_Confidence( &confidence ) );
+      pair<CComPtr<IGesture>,float> p(gesture,confidence);
+      discreteGesture.push_back(p);
+      discreteGestureTrackingId.push_back(trackingId);
+      break;
+    }
+    case GestureType::GestureType_Continuous: {
+      CComPtr<IContinuousGestureResult> gestureResult;
+      ERROR_CHECK(gestureFrame->get_ContinuousGestureResult(gesture, &gestureResult));
+      float progress;
+      ERROR_CHECK(gestureResult->get_Progress(&progress));
+      pair<CComPtr<IGesture>,float> p(gesture,progress);
+      continuousGesture.push_back(p);
+      continuousGestureTrackingId.push_back(trackingId);
+      break;
+    }
+    default:
+      break;
+    }
+  }
+  wstring trim(const wstring& str) {
+    const wstring::size_type last = str.find_last_not_of(L" ");
+    if(last == wstring::npos) throw runtime_error("failed " __FUNCTION__);
+    return str.substr(0,last+1);
+  }
+ public:
+  vector<pair<CComPtr<IGesture>,float>> discreteGesture;
+  vector<pair<CComPtr<IGesture>,float>> continuousGesture;
+  vector<UINT64> discreteGestureTrackingId;
+  vector<INT64> continuousGestureTrackingId;
+  void setGesture() {
+    if (!gesture_initialized) initializeGesture();
+    discreteGesture.clear();
+    continuousGesture.clear();
+    discreteGestureTrackingId.clear();
+    continuousGestureTrackingId.clear();
+    for (int i=0; i<skeleton.size(); i++) {
+      int bid = skeletonId[i];
+      UINT64 trackingId = skeletonTrackingId[i];
+      CComPtr<IVisualGestureBuilderFrameSource> gestureFrameSource;
+      ERROR_CHECK(gestureFrameReader[bid]->get_VisualGestureBuilderFrameSource(&gestureFrameSource));
+      gestureFrameSource->put_TrackingId(trackingId);
+      CComPtr<IVisualGestureBuilderFrame> gestureFrame;
+      HRESULT ret = gestureFrameReader[bid]->CalculateAndAcquireLatestFrame(&gestureFrame);
+      if (FAILED(ret)) continue;
+      BOOLEAN tracked;
+      ERROR_CHECK(gestureFrame->get_IsTrackingIdValid(&tracked));
+      if(!tracked) continue;
+      for(const CComPtr<IGesture> g : gestures) {
+        gestureResult(gestureFrame, g, trackingId);
+      }
+    }
+  }
+  void setGestureFile(wstring name) {
+    gestureFile  = name;
+  }
+  string gesture2string(const CComPtr<IGesture>& gesture) {
+    wstring buffer(BUFSIZ, L'\0');
+    ERROR_CHECK( gesture->get_Name(BUFSIZ, &buffer[0]));
+    const wstring temp = trim(&buffer[0]);
+    const string name(temp.begin(), temp.end());
+    return name;
+  }
+#endif
 
  public:
   NtKinect() { initialize();  }
