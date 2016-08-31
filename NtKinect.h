@@ -4,16 +4,11 @@
  * http://opensource.org/licenses/mit-license.php
  */
 
-/* version 1.6: 2016/08/24 */
+/* version 1.7: 2016/08/31 */
 
 #pragma once
 
-#if defined(USE_THREAD)
-#include <windows.h>
-#include <process.h>
-#endif /* USE_THREAD */
-
-#if defined(USE_SPEECH)
+#ifdef USE_SPEECH
 #include <sapi.h>
 #pragma warning(disable: 4996) // for error GetVersionExW() of sphelper.h
 #include <sphelper.h> // for SpFindBestToken()
@@ -32,7 +27,7 @@
 #include <array>
 #define _USE_MATH_DEFINES
 #include <cmath>
-#endif /* USE_FACE || USE_GESTURE */
+#endif /* defined(USE_FACE) || defined(USE_GESTURE) */
 
 #include <iostream>
 #include <sstream>
@@ -45,10 +40,10 @@
 
 #if defined(USE_FACE)
 #include <Kinect.Face.h>
-#endif /* USE_FACE */
+#endif /* defined(USE_FACE) */
 
 
-#if defined(USE_SPEECH)
+#ifdef USE_SPEECH
 // Quote from Kinect for Windows SDK v2.0 - Sample/Native/SpeechBasics-D2D
 // KinectAudioStream.h and .cpp : Copyright (c) Microsoft Corporation.  All rights reserved.
 #include "KinectAudioStream.h"
@@ -61,7 +56,7 @@
 DEFINE_GUID(CLSID_ExpectedRecognizer, 0x495648e7, 0xf7ab, 0x4267, 0x8e, 0x0f, 0xca, 0xfb, 0x7a, 0x33, 0xc1, 0x60);
 #endif /* USE_SPEECH */
 
-#if defined(USE_AUDIO)
+#ifdef USE_AUDIO
 #include "WaveFile.h"
 #endif /* USE_AUDIO */
 
@@ -79,7 +74,6 @@ using namespace std;
     ss << "failed " #ret " " << std::hex << ret << std::endl;   \
     throw std::runtime_error( ss.str().c_str() );               \
   }
-
 
 class NtKinect {
 
@@ -100,54 +94,7 @@ class NtKinect {
     kinect->get_CoordinateMapper(&coordinateMapper);
   }
 
-#if defined(USE_THREAD)
-  // ******* multi thread ********
- private:
-  HANDLE mutex;
-  BOOLEAN thread_initialized = false;
-  void initThread() {
-    if (thread_initialized) return;
-    mutex = CreateMutex(NULL, FALSE, NULL);
-    if (GetLastError() == ERROR_ALREADY_EXISTS) throw runtime_error("cannot create mutex");
-    thread_initialized = true;
-  }
- public:
-  void acquire() {
-    if (!thread_initialized) initThread();
-    DWORD ret = WaitForSingleObject(mutex, INFINITE);
-    if (ret == WAIT_FAILED) throw runtime_error("error in wait for mutex");
-  }
-  void release() {
-    if (!thread_initialized) throw runtime_error("You must call acquire() begore calling release()");
-    ReleaseMutex(mutex);
-  }
-  HRESULT _MapCameraPointToColorSpace(CameraSpacePoint sp, ColorSpacePoint* cp) {
-    acquire();
-    HRESULT h = coordinateMapper->MapCameraPointToColorSpace(sp,cp);
-    release();
-    return h;
-  }
-  HRESULT _MapCameraPointToDepthSpace(CameraSpacePoint sp, DepthSpacePoint* dp) {
-    acquire();
-    HRESULT h = coordinateMapper->MapCameraPointToDepthSpace(sp,dp);
-    release();
-    return h;
-  }
-  HRESULT _MapDepthPointToColorSpace(DepthSpacePoint dp, UINT16 depth, ColorSpacePoint* cp) {
-    acquire();
-    HRESULT h = coordinateMapper->MapDepthPointToColorSpace(dp,depth,cp);
-    release();
-    return h;
-  }
-  HRESULT _MapDepthPointToCameraSpace(DepthSpacePoint dp, UINT16 depth, CameraSpacePoint* sp) {
-    acquire();
-    HRESULT h = coordinateMapper->MapDepthPointToCameraSpace(dp,depth,sp);
-    release();
-    return h;
-  }
-#endif /* USE_THREAD */
-
-#if defined(USE_AUDIO)
+#ifdef USE_AUDIO
   // ******** audio *******
  private:
   CComPtr<IAudioBeamFrameReader> audioBeamFrameReader = nullptr;
@@ -215,19 +162,9 @@ class NtKinect {
       cv::line(image, cv::Point(w / 2, 0), cv::Point((int)dx + w / 2, (int)dy), cv::Scalar(255, 255, 255), 10);
     //cerr << "beamAngle = " << beamAngle << "  beamAngleConfidense = " << beamAngleConfidence << endl;
   }
-# if defined(USE_THREAD)
-  void _setAudio(float& beamAngle, float& beamAngleConfidence, UINT64& audioTrackingId, bool flag = false) {
-    acquire();
-    setAudio(flag);
-    beamAngle = this->beamAngle;
-    beamAngleConfidence = this->beamAngleConfidence;
-    audioTrackingId = this->audioTrackingId;
-    release();
-  }
-# endif /* USE_THREAD */
 #endif /* USE_AUDIO */
 
-#if defined(USE_SPEECH)
+#ifdef USE_SPEECH
   // ******** speech ********
  private:
   bool speech_initialized = false;
@@ -237,7 +174,7 @@ class NtKinect {
   CComPtr<ISpStream> speechStream;
   CComPtr<ISpRecognizer> speechRecognizer;
   CComPtr<ISpRecoContext> speechContext;
-  std::vector<CComPtr<ISpRecoGrammar> > speechGrammar;
+  std::vector<CComPtr<ISpRecoGrammar>> speechGrammar;
   HANDLE speechEvent;
   bool startedSpeech = false;
   string speechLang = "ja-JP";
@@ -456,15 +393,6 @@ class NtKinect {
     }
     return recognizedSpeech;
   }
-# if defined(USE_THREAD)
-  bool _setSpeech(pair<wstring,wstring>& p) {
-    acquire();
-    bool ret = setSpeech();
-    p = pair<wstring,wstring>(wstring(speechTag),wstring(speechItem));
-    release();
-    return ret;
-  }
-# endif /* USE_THRAD */
 #endif /* USE_SPEECH */
 
   // ******** color ********
@@ -504,14 +432,6 @@ class NtKinect {
     image = cv::Mat(colorHeight, colorWidth, CV_8UC4, &colorBuffer[0]);
     // cv::cvtColor(image,image,CV_BGRA2BGR); // when you save with VideoWriter
   }
-#if defined(USE_THREAD)
-  void _setRGB(cv::Mat& image) {
-    acquire();
-    setRGB();
-    image = rgbImage.clone();
-    release();
-  }
-#endif /* USE_THREAD */
 
   // ******** depth *******
  private:
@@ -554,14 +474,6 @@ class NtKinect {
       depthImage.at<UINT16>(i) = (raw) ? depthBuffer[i] : (UINT16)(255 * 255 * rate); // [0, 65535]
     }
   }
-#if defined(USE_THREAD)
-  void _setDepth(cv::Mat& image, bool raw = true) {
-    acquire();
-    setDepth(raw);
-    image = depthImage.clone();
-    release();
-  }
-#endif /* USE_THREAD */
 
   // ******* infrared ********
  private:
@@ -596,14 +508,6 @@ class NtKinect {
     updateInfraredFrame();
     infraredImage = cv::Mat(infraredHeight, infraredWidth, CV_16UC1, &infraredBuffer[0]);
   }
-#if defined(USE_THREAD)
-  void _setInfrared(cv::Mat& image) {
-    acquire();
-    setInfrared();
-    image = infraredImage.clone();
-    release();
-  }
-#endif /* USE_THREAD */
 
   // ******** bodyIndex *******
  private:
@@ -663,14 +567,6 @@ class NtKinect {
       }
     }
   }
-#if defined(USE_THREAD)
-  void _setBodyIndex(cv::Mat& image, bool raw = true) {
-    acquire();
-    setBodyIndex(raw);
-    image = bodyIndexImage.clone();
-    release();
-  }
-#endif /* USE_THREAD */
 
   // ******** body ********
   CComPtr<IBodyFrameReader> bodyFrameReader = nullptr;
@@ -763,26 +659,8 @@ class NtKinect {
     ans.first = handState; ans.second = handConfidence;
     return ans;
   }
-#if defined(USE_THREAD)
-  void _setSkeleton(vector<vector<Joint> >& skel, vector<int>& skelId, vector<UINT64>& skelTrackingId) {
-    acquire();
-    skel.clear();
-    skelId.clear();
-    skelTrackingId.clear();
-    setSkeleton(skel);
-    for (auto id: skeletonId) skelId.push_back(id);
-    for (auto tid: skeletonTrackingId) skelTrackingId.push_back(tid);
-    release();
-  }
-  pair<int, int> _handState(int id = 0, bool isLeft = true) {
-    acquire();
-    pair<int,int> state = handState(id,isLeft);
-    release();
-    return state;
-  }
-#endif /* USE_THREAD */
 
-#if defined(USE_FACE)
+#ifdef USE_FACE
   // ******** face ********
  private:
   array<CComPtr<IFaceFrameReader>, BODY_COUNT> faceFrameReader; // color
@@ -849,7 +727,7 @@ class NtKinect {
   vector<vector<PointF> > facePoint;
   vector<cv::Rect> faceRect;
   vector<cv::Vec3f> faceDirection;
-  vector<vector<DetectionResult> > faceProperty;
+  vector<vector<DetectionResult>> faceProperty;
   vector<UINT64> faceTrackingId;
   void setFace(bool isColorSpace=true) {
     if (isColorSpace && !face_initialized) initializeFace();
@@ -917,27 +795,6 @@ class NtKinect {
     ERROR_CHECK(result->GetFaceProperties(FaceProperty::FaceProperty_Count, &property[0]));
     faceProperty.push_back(property);
   }
-# if defined(USE_THREAD)
-  void _setFace(vector<vector<PointF> >& facePoint, vector<cv::Rect>& faceRect, vector<cv::Vec3f>& faceDirection, vector<vector<DetectionResult> >& faceProperty, vector<UINT64>& faceTrackingId, bool isColorSpace=true) {
-    acquire();
-    facePoint.clear();
-    faceRect.clear();
-    faceDirection.clear();
-    faceProperty.clear();
-    faceTrackingId.clear();
-    setFace(isColorSpace);
-    for (auto p: this->facePoint) facePoint.push_back(p);
-    for (auto p: this->faceRect) faceRect.push_back(p);
-    for (auto p: this->faceDirection) faceDirection.push_back(p);
-    for (auto p: this->faceProperty) {
-      vector<DetectionResult> v;
-      for (auto q: p) v.push_back(q);
-      facePoint.push_back(v);
-    }
-    for (auto p: this->faceTrackingId) faceTrackingId.push_back(p);
-    release();
-  }
-# endif /* USE_THREAD */
 #endif /* USE_FACE */
 
 #if defined(USE_FACE)
@@ -945,11 +802,11 @@ class NtKinect {
  private:
   array<CComPtr<IHighDefinitionFaceFrameReader>,BODY_COUNT> hdfaceFrameReader;
   BOOLEAN hdface_initialized = false;
-  array<float,FaceShapeDeformations::FaceShapeDeformations_Count> shapeUnits;
   array<CComPtr<IFaceModel>,BODY_COUNT>  faceModel;
   array<bool,BODY_COUNT> hdfaceModelValid;
   array<CComPtr<IFaceAlignment>,BODY_COUNT> faceAlignment;
   array<CComPtr<IFaceModelBuilder>,BODY_COUNT> faceModelBuilder;
+  array<array<float, FaceShapeDeformations::FaceShapeDeformations_Count>,BODY_COUNT> shapeUnits;
   array<UINT32,BODY_COUNT> hdfaceVertexCount;
   array<UINT64,BODY_COUNT> _hdfaceTrackingId;
   void initializeHDFace() {
@@ -959,7 +816,7 @@ class NtKinect {
       ERROR_CHECK(CreateHighDefinitionFaceFrameSource(kinect,&hdfaceFrameSource));
       ERROR_CHECK(hdfaceFrameSource->OpenReader(&hdfaceFrameReader[count]));
       ERROR_CHECK(CreateFaceAlignment(&faceAlignment[count]));
-      ERROR_CHECK(CreateFaceModel(1.0f, FaceShapeDeformations::FaceShapeDeformations_Count,&shapeUnits[count],&faceModel[count]));
+      ERROR_CHECK(CreateFaceModel(1.0f, FaceShapeDeformations::FaceShapeDeformations_Count,&shapeUnits[count][0],&faceModel[count]));
       ERROR_CHECK(GetFaceModelVertexCount(&hdfaceVertexCount[count]));
       FaceModelBuilderAttributes attributes = FaceModelBuilderAttributes::FaceModelBuilderAttributes_None;
       ERROR_CHECK(hdfaceFrameSource->OpenModelBuilder(attributes,&faceModelBuilder[count]));
@@ -970,9 +827,9 @@ class NtKinect {
     hdface_initialized = true;
   }
   void updateHDFaceFrame(int idx) {
-    CComPtr<IHighDefinitionFaceFrame> hdfaceFrame;
+    CComPtr<IHighDefinitionFaceFrame> hdfaceFrame = nullptr;
     HRESULT ret = hdfaceFrameReader[idx]->AcquireLatestFrame(&hdfaceFrame);
-    if (FAILED(ret)) return;
+    if (FAILED(ret) || hdfaceFrame == nullptr) return;
     BOOLEAN tracked = false;
     ERROR_CHECK(hdfaceFrame->get_IsFaceTracked(&tracked));
     if (!tracked) return;
@@ -999,9 +856,9 @@ class NtKinect {
     }
   }
  public:
-  vector<vector<CameraSpacePoint> > hdfaceVertices;
+  vector<vector<CameraSpacePoint>> hdfaceVertices;
   vector<UINT64> hdfaceTrackingId;
-  vector<pair<int,int> > hdfaceStatus;
+  vector<pair<int,int>> hdfaceStatus;
   void setHDFace() {
     if (!hdface_initialized) initializeHDFace();
     hdfaceVertices.clear();
@@ -1071,29 +928,9 @@ class NtKinect {
     }
     return s;
   };
-  pair<string,string> hdfaceStatusToString(pair<int,int>& status) {
+  pair<string,string> hdfaceStatusToString(pair<int,int> status) {
     return pair<string,string>(hdfaceCollectionStatusToString(status.first),hdfaceCaptureStatusToString(status.second));
   }
-# if defined(USE_THREAD)
-  void _setHDFace(vector<vector<CameraSpacePoint> >& hdfaceVertices, vector<UINT64>& hdfaceTrackingId, vector<pair<int,int> >& hdfaceStatus) {
-    acquire();
-    hdfaceVertices.clear();
-    hdfaceTrackingId.clear();
-    hdfaceStatus.clear();
-    setHdFace();
-    for (auto p: this->hdfaceVertices) hdfaceVertices.push_back(p);
-    for (auto p: this->hdfaceTrackingId) hdfaceTrackingId.push_back(p);
-    for (auto p: this->hdfaceStatus) hdfaceStatus.push_back(p);
-    release();
-  }
-  pair<string,string> _hdfaceStatusToString(pair<int,int>& status) {
-    acquire();
-    pair<string,string> p = hdfaceStatusToString(status);
-    release();
-    return p;
-  }
-# endif /* USE_THREAD*/
-
 #endif /* defined(USE_FACE) */
 
 #if defined(USE_GESTURE)
@@ -1101,7 +938,7 @@ class NtKinect {
  private:
   std::array<CComPtr<IVisualGestureBuilderFrameReader>, BODY_COUNT> gestureFrameReader;
   BOOLEAN gesture_initialized = false;
-  std::vector<CComPtr<IGesture> > gestures;
+  std::vector<CComPtr<IGesture>> gestures;
   wstring gestureFile =  L"SampleDatabase.gbd";
   void initializeGesture() {
     if (!body_initialized) throw runtime_error("You must call setSkeleton() before calling setGesture().");
@@ -1163,8 +1000,8 @@ class NtKinect {
     return str.substr(0,last+1);
   }
  public:
-  vector<pair<CComPtr<IGesture>,float> > discreteGesture;
-  vector<pair<CComPtr<IGesture>,float> > continuousGesture;
+  vector<pair<CComPtr<IGesture>,float>> discreteGesture;
+  vector<pair<CComPtr<IGesture>,float>> continuousGesture;
   vector<UINT64> discreteGestureTrackingId;
   vector<INT64> continuousGestureTrackingId;
   void setGesture() {
@@ -1200,30 +1037,6 @@ class NtKinect {
     const string name(temp.begin(), temp.end());
     return name;
   }
-# if defined(USE_THREAD)
-  void _setGesture(vector<pair<CComPtr<IGesture>,float> >& discreteGesture,
-		   vector<pair<CComPtr<IGesture>,float> >& continuousGesture,
-		   vector<UINT64>& discreteGestureTrackingId,
-		   vector<INT64>& continuousGestureTrackingId) {
-    acquire();
-    discreteGesture.clear();
-    continuousGesture.clear();
-    discreteGestureTrackingId.clear();
-    continuousGestureTrackingId.clear();
-    setGesture();
-    for (auto p: this->discreteGesture) discreteGesture.push_back(p);
-    for (auto p: this->continuousGesture) continuousGesture.push_back(p);
-    for (auto p: this->discreteGestureTrackingId) discreteGestureTrackingId.push_back(p);
-    for (auto p: this->continuousGestureTrackingId) continuousGestureTrackingId.push_back(p);
-    release();
-  }
-  string _gesture2string(const CComPtr<IGesture>& gesture) {
-    acquire();
-    string name = getsutre2string(gesture);
-    release();
-    return name;
-}
-# endif /* USE_THREAD */
 #endif
 
  public:
