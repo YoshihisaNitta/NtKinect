@@ -4,7 +4,29 @@
  * http://opensource.org/licenses/mit-license.php
  */
 
-/* version 1.7.1: 2016/09/06 */
+/* version 1.8: 2016/11/04 */
+
+/* http://nw.tsuda.ac.jp/lec/kinect2/ */
+
+/* [Definable Macros]
+ *   USE_FACE
+ *     Library: Kinect20.Face.lib
+ *     Post Build Event:
+ *            xcopy "$(KINECTSDK20_DIR)\Redist\Face\x64" "$(OutDir)" /e /y /i /r
+ *   USE_SPEECH
+ *     Library: sapi.lib
+ *   USE_GESTURE
+ *     Library: Kinect20.VisualGestureBuilder.lib
+ *     Post Build Event:
+ *            xcopy "$(KINECTSDK20_DIR)\Redist\VGB\x64" "$(OutDir)" /e /y /i /r
+ *            if exist "$(ProjectDir)\*.gbd" ( copy "$(ProjectDir)\*.gbd" "$(OutDir)" /y )
+ *   USE_AUDIO
+ *   USE_THREAD
+ *
+ *
+ *  [to add "Post Build Event"]
+ *    "Configuration Property" -> "Build Event" -> "Post Build Event" -> "Command Line" --> add
+ */
 
 #pragma once
 
@@ -19,14 +41,6 @@
 #include <sphelper.h> // for SpFindBestToken()
 #include <locale.h>
 #endif /* USE_SPEECH */
-
-// If you define USE_FACE, please link "Kinect20.Face.lib" 
-// and specify "Configuration Property" -> "Build Event" -> "Post Build Event" -> "Command Line" --> 
-//     xcopy "$(KINECTSDK20_DIR)\Redist\Face\x64" "$(OutDir)" /e /y /i /r
-
-#if defined(USE_GESTURE)
-#include <Kinect.VisualGestureBuilder.h>
-#endif
 
 #if defined(USE_FACE) || defined(USE_GESTURE)
 #include <array>
@@ -47,10 +61,13 @@
 #include <Kinect.Face.h>
 #endif /* USE_FACE */
 
+#if defined(USE_GESTURE)
+#include <Kinect.VisualGestureBuilder.h>
+#endif
 
 #if defined(USE_SPEECH)
 // Quote from Kinect for Windows SDK v2.0 - Sample/Native/SpeechBasics-D2D
-// KinectAudioStream.h and .cpp : Copyright (c) Microsoft Corporation.  All rights reserved.
+// KinectAudioStream.h and .cpp : by Microsoft Corporation
 #include "KinectAudioStream.h"
 
 #define INITGUID
@@ -464,7 +481,7 @@ class NtKinect {
     release();
     return ret;
   }
-# endif /* USE_THRAD */
+# endif /* USE_THREAD */
 #endif /* USE_SPEECH */
 
   // ******** color ********
@@ -943,41 +960,43 @@ class NtKinect {
 #if defined(USE_FACE)
   // ******** hdface ********
  private:
-  array<CComPtr<IHighDefinitionFaceFrameReader>,BODY_COUNT> hdfaceFrameReader;
   BOOLEAN hdface_initialized = false;
-  array<array<float,FaceShapeDeformations::FaceShapeDeformations_Count>,BODY_COUNT> shapeUnits;
-  array<CComPtr<IFaceModel>,BODY_COUNT>  faceModel;
+  array<CComPtr<IHighDefinitionFaceFrameSource>,BODY_COUNT> hdfaceFrameSource;
+  array<CComPtr<IHighDefinitionFaceFrameReader>,BODY_COUNT> hdfaceFrameReader;
+  array<CComPtr<IFaceModelBuilder>,BODY_COUNT> faceModelBuilder;
   array<bool,BODY_COUNT> hdfaceModelValid;
   array<CComPtr<IFaceAlignment>,BODY_COUNT> faceAlignment;
-  array<CComPtr<IFaceModelBuilder>,BODY_COUNT> faceModelBuilder;
+  array<CComPtr<IFaceModel>,BODY_COUNT>  faceModel;
+  array<array<float,FaceShapeDeformations::FaceShapeDeformations_Count>,BODY_COUNT> shapeUnits;
+  array<CComPtr<IFaceModelData>,BODY_COUNT> faceModelData;
   array<UINT32,BODY_COUNT> hdfaceVertexCount;
   array<UINT64,BODY_COUNT> _hdfaceTrackingId;
+  bool hdfaceModelFlag = false;
   void initializeHDFace() {
     if (!body_initialized) throw runtime_error("You must call setSkeleton() before calling setHDFace().");
     for (int count = 0; count < BODY_COUNT; count++) {
-      CComPtr<IHighDefinitionFaceFrameSource> hdfaceFrameSource;
-      ERROR_CHECK(CreateHighDefinitionFaceFrameSource(kinect,&hdfaceFrameSource));
-      ERROR_CHECK(hdfaceFrameSource->OpenReader(&hdfaceFrameReader[count]));
+      ERROR_CHECK(CreateHighDefinitionFaceFrameSource(kinect,&hdfaceFrameSource[count]));
+      ERROR_CHECK(hdfaceFrameSource[count]->OpenReader(&hdfaceFrameReader[count]));
+      ERROR_CHECK(hdfaceFrameSource[count]->OpenModelBuilder(FaceModelBuilderAttributes::FaceModelBuilderAttributes_None,&faceModelBuilder[count]));
+      ERROR_CHECK(faceModelBuilder[count]->BeginFaceDataCollection());
       ERROR_CHECK(CreateFaceAlignment(&faceAlignment[count]));
       ERROR_CHECK(CreateFaceModel(1.0f, FaceShapeDeformations::FaceShapeDeformations_Count,&shapeUnits[count][0],&faceModel[count]));
+      hdfaceVertexCount[count]=0;
       ERROR_CHECK(GetFaceModelVertexCount(&hdfaceVertexCount[count]));
-      FaceModelBuilderAttributes attributes = FaceModelBuilderAttributes::FaceModelBuilderAttributes_None;
-      ERROR_CHECK(hdfaceFrameSource->OpenModelBuilder(attributes,&faceModelBuilder[count]));
-      ERROR_CHECK(faceModelBuilder[count]->BeginFaceDataCollection());
       _hdfaceTrackingId[count] = -1;
       hdfaceModelValid[count] = false;
     }
     hdface_initialized = true;
   }
   void updateHDFaceFrame(int idx) {
-    CComPtr<IHighDefinitionFaceFrame> hdfaceFrame;
+    CComPtr<IHighDefinitionFaceFrame> hdfaceFrame = nullptr;
     HRESULT ret = hdfaceFrameReader[idx]->AcquireLatestFrame(&hdfaceFrame);
-    if (FAILED(ret)) return;
+    if (!SUCCEEDED(ret) || hdfaceFrame == nullptr) return;
     BOOLEAN tracked = false;
-    ERROR_CHECK(hdfaceFrame->get_IsFaceTracked(&tracked));
-    if (!tracked) return;
-    ERROR_CHECK(hdfaceFrame->GetAndRefreshFaceAlignmentResult(faceAlignment[idx]));
-    if (faceAlignment[idx] == nullptr) return;
+    ret = hdfaceFrame->get_IsFaceTracked(&tracked);
+    if (!SUCCEEDED(ret) || !tracked) return;
+    ret = hdfaceFrame->GetAndRefreshFaceAlignmentResult(faceAlignment[idx]);
+    if (!SUCCEEDED(ret) || faceAlignment[idx] == nullptr) return;
     buildFaceModel(idx);
     vector<CameraSpacePoint> vertices;
     vertices.resize(hdfaceVertexCount[idx]);
@@ -989,19 +1008,29 @@ class NtKinect {
   void buildFaceModel(int idx) {
     if (hdfaceModelValid[idx]) return;
     if (hdfaceCollectionStatus(idx)) return;
-    CComPtr<IFaceModelData> faceModelData = nullptr;
-    ERROR_CHECK(faceModelBuilder[idx]->GetFaceData(&faceModelData));
-    if (faceModelData != nullptr) {
-#if 0
-      ERROR_CHECK(faceModelData->ProduceFaceModel(&faceModel[idx]));  // ??? not needed for Kinect SDK v2.0_1409
-#endif
-      hdfaceModelValid[idx] = true;
+    faceModelData[idx] = nullptr;
+    HRESULT ret = faceModelBuilder[idx]->GetFaceData(&faceModelData[idx]);
+    if (SUCCEEDED(ret) && faceModelData[idx] != nullptr) {
+      if (hdfaceModelFlag) {
+	faceModel[idx] = nullptr;
+	ret = faceModelData[idx]->ProduceFaceModel(&faceModel[idx]);
+	if (SUCCEEDED(ret) && faceModel[idx] != nullptr) {
+	  hdfaceModelValid[idx] = true;
+	}
+      } else {
+	hdfaceModelValid[idx] = true;
+      }
     }
   }
  public:
   vector<vector<CameraSpacePoint> > hdfaceVertices;
   vector<UINT64> hdfaceTrackingId;
   vector<pair<int,int> > hdfaceStatus;
+  bool setHDFaceModelFlag(bool flag=false) {
+    bool old = hdfaceModelFlag;
+    hdfaceModelFlag = flag;
+    return old;
+  }
   void setHDFace() {
     if (!hdface_initialized) initializeHDFace();
     hdfaceVertices.clear();
@@ -1011,11 +1040,9 @@ class NtKinect {
       int bid = skeletonId[i];
       UINT64 trackingId = skeletonTrackingId[i];
       if (trackingId != _hdfaceTrackingId[bid]) {
-        CComPtr<IHighDefinitionFaceFrameSource> hdfaceFrameSource;
-        ERROR_CHECK(hdfaceFrameReader[bid]->get_HighDefinitionFaceFrameSource(&hdfaceFrameSource));
-        ERROR_CHECK(hdfaceFrameSource->put_TrackingId(trackingId));
-        _hdfaceTrackingId[bid] = trackingId;
-        hdfaceModelValid[bid] = false;
+	ERROR_CHECK(hdfaceFrameSource[bid]->put_TrackingId(trackingId));
+	_hdfaceTrackingId[bid] = trackingId;
+	hdfaceModelValid[bid] = false;
       }
       updateHDFaceFrame(bid);
     }
@@ -1093,8 +1120,7 @@ class NtKinect {
     return p;
   }
 # endif /* USE_THREAD*/
-
-#endif /* defined(USE_FACE) */
+#endif /* USE_FACE */
 
 #if defined(USE_GESTURE)
   // ******** gesture ********
