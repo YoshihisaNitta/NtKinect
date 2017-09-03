@@ -1,10 +1,10 @@
 ﻿/*
- * Copyright (c) 2016 Yoshihisa Nitta
+ * Copyright (c) 2016-2017 Yoshihisa Nitta
  * Released under the MIT license
  * http://opensource.org/licenses/mit-license.php
  */
 
-/* version 1.8: 2016/11/04 */
+/* version 1.8.2: 2017/08/16 */
 
 /* http://nw.tsuda.ac.jp/lec/kinect2/ */
 
@@ -949,7 +949,7 @@ class NtKinect {
     for (auto p: this->faceProperty) {
       vector<DetectionResult> v;
       for (auto q: p) v.push_back(q);
-      facePoint.push_back(v);
+      faceProperty.push_back(v);
     }
     for (auto p: this->faceTrackingId) faceTrackingId.push_back(p);
     release();
@@ -1007,13 +1007,17 @@ class NtKinect {
   }
   void buildFaceModel(int idx) {
     if (hdfaceModelValid[idx]) return;
-    if (hdfaceCollectionStatus(idx)) return;
+    if (hdfaceCollectionStatus(idx) != FaceModelBuilderCollectionStatus_Complete) return;
     faceModelData[idx] = nullptr;
     HRESULT ret = faceModelBuilder[idx]->GetFaceData(&faceModelData[idx]);
     if (SUCCEEDED(ret) && faceModelData[idx] != nullptr) {
       if (hdfaceModelFlag) {
 	faceModel[idx] = nullptr;
-	ret = faceModelData[idx]->ProduceFaceModel(&faceModel[idx]);
+	try {
+	  ret = faceModelData[idx]->ProduceFaceModel(&faceModel[idx]);
+	} catch (exception ex) {
+	  return;
+	}
 	if (SUCCEEDED(ret) && faceModel[idx] != nullptr) {
 	  hdfaceModelValid[idx] = true;
 	}
@@ -1107,7 +1111,7 @@ class NtKinect {
     hdfaceVertices.clear();
     hdfaceTrackingId.clear();
     hdfaceStatus.clear();
-    setHdFace();
+    setHDFace();
     for (auto p: this->hdfaceVertices) hdfaceVertices.push_back(p);
     for (auto p: this->hdfaceTrackingId) hdfaceTrackingId.push_back(p);
     for (auto p: this->hdfaceStatus) hdfaceStatus.push_back(p);
@@ -1245,7 +1249,7 @@ class NtKinect {
   }
   string _gesture2string(const CComPtr<IGesture>& gesture) {
     acquire();
-    string name = getsutre2string(gesture);
+    string name = gesture2string(gesture);
     release();
     return name;
   }
