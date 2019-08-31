@@ -1,0 +1,2 @@
+#define NTKINECTDLL_API __declspec(dllexport)
+#define NTKINECTDLL_API __declspec(dllimport)
